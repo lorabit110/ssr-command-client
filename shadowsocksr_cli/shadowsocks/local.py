@@ -42,16 +42,10 @@ def main():
         os.chdir(p)
 
     config = shell.get_config(True)
-    print('*' * 20)
-    print(config)
-    print('*' * 20)
     if not config.get('dns_ipv6', False):
         asyncdns.IPV6_CONNECTION_SUPPORT = False
 
     daemon.daemon_exec(config)
-    print('*' * 20)
-    print(config)
-    print('*' * 20)
     logging.info("local start with protocol[%s] password [%s] method [%s] obfs [%s] obfs_param [%s]" %
                  (config['protocol'], config['password'], config['method'], config['obfs'], config['obfs_param']))
 
