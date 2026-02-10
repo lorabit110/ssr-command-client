@@ -21,9 +21,10 @@ from __future__ import absolute_import, division, print_function, \
 import os
 import json
 import sys
+import logging
 import getopt
 from shadowsocksr_cli.shadowsocks import encrypt
-from shadowsocksr_cli.shadowsocks.common import to_bytes, to_str, IPNetwork, PortRange, logging
+from shadowsocksr_cli.shadowsocks.common import to_bytes, to_str, IPNetwork, PortRange
 
 VERBOSE_LEVEL = 5
 
