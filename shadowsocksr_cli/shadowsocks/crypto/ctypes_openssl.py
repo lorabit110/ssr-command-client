@@ -37,8 +37,11 @@ loaded = False
 buf_size = 2048
 
 
+ctx_cleanup = None
+
+
 def load_openssl():
-    global loaded, libcrypto, buf
+    global loaded, libcrypto, buf, ctx_cleanup
 
     from ctypes.util import find_library
     for p in ('crypto', 'eay32', 'libeay32'):
@@ -58,8 +61,21 @@ def load_openssl():
     libcrypto.EVP_CipherUpdate.argtypes = (c_void_p, c_void_p, c_void_p,
                                            c_char_p, c_int)
 
-    libcrypto.EVP_CIPHER_CTX_cleanup.argtypes = (c_void_p,)
+    if hasattr(libcrypto, "EVP_CIPHER_CTX_cleanup"):
+        libcrypto.EVP_CIPHER_CTX_cleanup.argtypes = (c_void_p,)
+        ctx_cleanup = libcrypto.EVP_CIPHER_CTX_cleanup
+    else:
+        libcrypto.EVP_CIPHER_CTX_reset.argtypes = (c_void_p,)
+        ctx_cleanup = libcrypto.EVP_CIPHER_CTX_reset
     libcrypto.EVP_CIPHER_CTX_free.argtypes = (c_void_p,)
+
+    # OpenSSL 3.0+: load legacy provider for legacy ciphers (bf, rc4, des, etc.)
+    if hasattr(libcrypto, 'OSSL_PROVIDER_load'):
+        libcrypto.OSSL_PROVIDER_load.restype = c_void_p
+        libcrypto.OSSL_PROVIDER_load.argtypes = (c_void_p, c_char_p)
+        libcrypto.OSSL_PROVIDER_load(None, b'legacy')
+        libcrypto.OSSL_PROVIDER_load(None, b'default')
+
     if hasattr(libcrypto, 'OpenSSL_add_all_ciphers'):
         libcrypto.OpenSSL_add_all_ciphers()
 
@@ -116,8 +132,9 @@ class CtypesCrypto(object):
 
     def clean(self):
         if self._ctx:
-            libcrypto.EVP_CIPHER_CTX_cleanup(self._ctx)
+            ctx_cleanup(self._ctx)
             libcrypto.EVP_CIPHER_CTX_free(self._ctx)
+            self._ctx = None
 
 
 ciphers = {
