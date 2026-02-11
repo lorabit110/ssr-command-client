@@ -5,7 +5,7 @@ Reference gist: proxy_socks2http.py https://gist.github.com/zengxs/dc6cb4dea4495
 import asyncio
 import logging
 import re
-from asyncio import StreamReader, StreamReaderProtocol, StreamWriter
+from asyncio import StreamReader, StreamWriter
 from collections import namedtuple
 from typing import Optional
 
@@ -13,22 +13,43 @@ import socks  # use pysocks
 
 logging.basicConfig(level=logging.INFO)
 
+# Timeout for SOCKS5 connect and idle data transfer (seconds)
+CONNECT_TIMEOUT = 30
+IO_TIMEOUT = 300
+
 HttpHeader = namedtuple(
     "HttpHeader", ["method", "url", "version", "connect_to", "is_connect"]
 )
 
 
-async def dial(client_conn, server_conn):
-    async def io_copy(reader: StreamReader, writer: StreamWriter):
+def _close_writer(writer: StreamWriter):
+    """Safely close a StreamWriter."""
+    try:
+        writer.close()
+    except Exception:
+        pass
+
+
+async def _relay(reader: StreamReader, writer: StreamWriter):
+    """Copy data from reader to writer until EOF or error, then close writer."""
+    try:
         while True:
-            data = await reader.read(8192)
+            data = await asyncio.wait_for(reader.read(8192), timeout=IO_TIMEOUT)
             if not data:
                 break
             writer.write(data)
-        writer.close()
+            await writer.drain()
+    except (asyncio.TimeoutError, ConnectionError, OSError, asyncio.IncompleteReadError):
+        pass
+    finally:
+        _close_writer(writer)
 
-    asyncio.ensure_future(io_copy(client_conn[0], server_conn[1]))
-    asyncio.ensure_future(io_copy(server_conn[0], client_conn[1]))
+
+async def _dial(client_conn, server_conn):
+    """Establish bidirectional relay, wait for both directions to finish."""
+    t1 = asyncio.ensure_future(_relay(client_conn[0], server_conn[1]))
+    t2 = asyncio.ensure_future(_relay(server_conn[0], client_conn[1]))
+    await asyncio.gather(t1, t2, return_exceptions=True)
 
 
 async def open_socks5_connection(
@@ -40,9 +61,10 @@ async def open_socks5_connection(
     socks_host: str = "localhost",
     socks_port: int = 1080,
     limit=2**16,
-    loop=None
 ):
+    loop = asyncio.get_event_loop()
     s = socks.socksocket()
+    s.settimeout(CONNECT_TIMEOUT)
     s.set_proxy(
         socks.SOCKS5,
         addr=socks_host,
@@ -50,22 +72,25 @@ async def open_socks5_connection(
         username=username,
         password=password,
     )
-    s.connect((host, port))
-
-    if not loop:
-        loop = asyncio.get_event_loop()
-
-    reader = StreamReader(limit=limit, loop=loop)
-    protocol = StreamReaderProtocol(reader, loop=loop)
-    transport, _ = await loop.create_connection(lambda: protocol, sock=s)
-    writer = StreamWriter(transport, protocol, reader, loop)
-    return reader, writer
+    try:
+        await loop.run_in_executor(None, s.connect, (host, port))
+        s.setblocking(False)
+        reader = StreamReader(limit=limit)
+        protocol = asyncio.StreamReaderProtocol(reader)
+        transport, _ = await loop.create_connection(lambda: protocol, sock=s)
+        writer = StreamWriter(transport, protocol, reader, loop)
+        return reader, writer
+    except Exception:
+        s.close()
+        raise
 
 
 async def read_until_end_of_http_header(reader: StreamReader) -> bytes:
     lines = []
     while True:
-        line = await reader.readline()
+        line = await asyncio.wait_for(reader.readline(), timeout=CONNECT_TIMEOUT)
+        if not line:
+            raise IOError("Client disconnected before sending full header")
         lines.append(line)
         if line == b"\r\n":
             break
@@ -111,29 +136,33 @@ def parse_http_header(header: bytes) -> HttpHeader:
 
 
 async def handle_connection(reader: StreamReader, writer: StreamWriter, socks_port=1080):
+    server_conn = None
     try:
         http_header_bytes = await read_until_end_of_http_header(reader)
         http_header = parse_http_header(http_header_bytes)
-    except (IOError, ValueError) as e:
-        logging.error(e)
-        writer.close()
-        return
 
-    server_conn = await open_socks5_connection(
-        host=http_header.connect_to[0],
-        port=http_header.connect_to[1],
-        socks_host="localhost",
-        socks_port=socks_port,
-    )
+        server_conn = await open_socks5_connection(
+            host=http_header.connect_to[0],
+            port=http_header.connect_to[1],
+            socks_host="localhost",
+            socks_port=socks_port,
+        )
 
-    if http_header.is_connect:
-        writer.write(b"HTTP/1.0 200 Connection Established\r\n\r\n")
-    else:
-        server_writer = server_conn[1]
-        server_writer.write(http_header_bytes)
+        if http_header.is_connect:
+            writer.write(b"HTTP/1.0 200 Connection Established\r\n\r\n")
+            await writer.drain()
+        else:
+            server_conn[1].write(http_header_bytes)
+            await server_conn[1].drain()
 
-    # 建立双向连接
-    asyncio.ensure_future(dial((reader, writer), server_conn))
+        await _dial((reader, writer), server_conn)
+
+    except Exception as e:
+        logging.debug("connection error: %s", e)
+        # Clean up server side if it was opened
+        if server_conn:
+            _close_writer(server_conn[1])
+        _close_writer(writer)
 
 
 def main():
@@ -146,6 +175,7 @@ def main():
         pass
     finally:
         server.close()
+        loop.run_until_complete(server.wait_closed())
 
 
 if __name__ == "__main__":
