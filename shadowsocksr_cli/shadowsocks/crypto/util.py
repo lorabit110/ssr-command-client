@@ -55,14 +55,12 @@ def find_library(possible_lib_names, search_symbol, library_name):
     if type(possible_lib_names) not in (list, tuple):
         possible_lib_names = [possible_lib_names]
 
-    lib_names = []
-    for lib_name in possible_lib_names:
-        lib_names.append(lib_name)
-        lib_names.append('lib' + lib_name)
+    lib_names = list(possible_lib_names)
 
     for name in lib_names:
         if os.name == "nt":
             paths.extend(find_library_nt(name))
+            paths.extend(find_library_nt('lib' + name))
         else:
             path = ctypes.util.find_library(name)
             if path:
@@ -77,14 +75,10 @@ def find_library(possible_lib_names, search_symbol, library_name):
         import glob
 
         for name in lib_names:
-            if name.startswith('lib'):
-                lib_prefix_name = name
-            else:
-                lib_prefix_name = 'lib' + name
             patterns = [
-                '/usr/local/lib*/%s.*' % lib_prefix_name,
-                '/usr/lib*/%s.*' % lib_prefix_name,
-                '%s.*' % lib_prefix_name,
+                '/usr/local/lib*/lib%s.*' % name,
+                '/usr/lib*/lib%s.*' % name,
+                'lib%s.*' % name,
                 '%s.dll' % name]
 
             for pat in patterns:
