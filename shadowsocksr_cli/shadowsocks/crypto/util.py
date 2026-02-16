@@ -77,10 +77,14 @@ def find_library(possible_lib_names, search_symbol, library_name):
         import glob
 
         for name in lib_names:
+            if name.startswith('lib'):
+                lib_prefix_name = name
+            else:
+                lib_prefix_name = 'lib' + name
             patterns = [
-                '/usr/local/lib*/lib%s.*' % name,
-                '/usr/lib*/lib%s.*' % name,
-                'lib%s.*' % name,
+                '/usr/local/lib*/%s.*' % lib_prefix_name,
+                '/usr/lib*/%s.*' % lib_prefix_name,
+                '%s.*' % lib_prefix_name,
                 '%s.dll' % name]
 
             for pat in patterns:
